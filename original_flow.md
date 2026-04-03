@@ -202,27 +202,6 @@ test-model-spider.sh
 
 ---
 
-### How to Run
-
-### Please change these directories in the command according to your workspace path.
-```
---data_url "D:\Study\Thesis\modelspider_store\data\implclproto" 
---log_url "D:\Study\Thesis\modelspider_store\log" 
---pretrained_url "D:\Study\Thesis\modelspider_store\best.pth"
-```
-
-#### Inference Mode Command:
-```
-python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 10 --batch_size 16 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_filesdata\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best.pth" --num_workers 0
-```
-#### Training Mode Command: 
-
-```
-python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 10 --batch_size 16 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
-```
-***dropped --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best.pth" from command of inference mode
----
-
 ## Key Insight
 
 **Prototype vectors** (class centroids extracted from each PTM on each dataset) serve as the "fingerprint" of both the PTM and the task. The cross-attention learns to match "which PTM fingerprint fits this task fingerprint best."
