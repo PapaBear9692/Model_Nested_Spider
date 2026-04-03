@@ -95,24 +95,82 @@ For conda and venv both: ```pip install -r requirements.txt --index-url https://
 --pretrained_url "D:\Study\Thesis\modelspider_store\best.pth"
 ```
 
-#### Inference Mode Run Command:
+---
 
-```bash
-python trainer.py ... --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\30.pth"
+## 10 PTM Mode (Default)
+
+The default mode ranks **10 PTMs**: googlenet, inception_v3, resnet50, resnet101, resnet152, densenet121, densenet169, densenet201, mobilenet_v2, mnasnet1_0
+
+### Inference Mode (10 PTMs):
+
+Use this to first train then do inference. (change the name of .pth file)
+```
+python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 10 --batch_size 16 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best.pth" --num_workers 0
 ```
 
-This skips training and goes straight to testing!
-
-Or, Use this to first train then do inference. (change the name of .pth file)
-```
-python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 10 --batch_size 16 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_filesdata\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best.pth" --num_workers 0
-```
-#### Training Mode Run Command: 
+### Training Mode (10 PTMs):
 
 ```
 python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 10 --batch_size 16 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
 ```
-#### *just dropped --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best.pth" from command of inference mode
+
+> **Note:** Inference mode = same command but WITH `--pretrained_url` flag (skips training)
+
+---
+
+## 66 PTM Mode (Extended)
+
+This mode ranks **66 PTMs** — combinations of 3 architectures (DenseNet-201, Inception-V3, ResNet-50) fine-tuned on 22 datasets each.
+
+### The 66 PTMs:
+
+| Architecture | Datasets |
+|--------------|----------|
+| DenseNet-201 | AID, Aircraft, CIFAR10, CIFAR100, CUB2011, Caltech101, Cars, DTD, Dogs, EuroSAT, Flowers, Food, ImageNet, NABirds, PACS, Pet, Resisc45, STL10, SUN397, SVHN, SmallNORB, VLCS |
+| Inception-V3 | Same 22 datasets |
+| ResNet-50 | Same 22 datasets |
+
+### How to Enable:
+
+Set environment variable `MODELS42=yes` and use `--num_learnware 66`
+
+### Training Mode (66 PTMs):
+
+**Windows PowerShell:**
+```powershell
+$env:MODELS42="yes"; python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 66 --batch_size 8 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
+```
+
+**Windows CMD:**
+```cmd
+set MODELS42=yes && python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 66 --batch_size 8 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
+```
+
+**Git Bash / Linux:**
+```bash
+MODELS42=yes python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 66 --batch_size 8 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
+```
+
+### Inference Mode (66 PTMs):
+
+Add `--pretrained_url` to skip training:
+
+**Windows PowerShell:**
+```powershell
+$env:MODELS42="yes"; python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 66 --batch_size 8 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best_66.pth" --num_workers 0
+```
+
+### Key Differences: 10 vs 66 PTM Mode
+
+| Parameter | 10 PTM Mode | 66 PTM Mode |
+|-----------|-------------|-------------|
+| `MODELS42` | not set | `yes` |
+| `--num_learnware` | 10 | 66 |
+| `--batch_size` | 16 | 8 (recommended) |
+| Memory Usage | Lower | Higher |
+| Training Time | Faster | ~6-7x slower |
+
+> **Warning:** 66 PTM mode requires more GPU memory. If you get OOM errors, reduce `--batch_size` to 4.
 
 ---
 
