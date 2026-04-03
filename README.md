@@ -105,4 +105,39 @@ python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c1
 python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 10 --batch_size 16 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
 ```
 #### *just dropped --pretrained_url "D:\Study\Thesis\Model_Nested_Spider\required_files\best.pth" from command of inference mode
+
 ---
+
+## Command Line Flags Reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--seed` | 0 | Random seed for reproducibility |
+| `--train_dataset` | - | List of dataset codes for training (e.g., c86, c59) |
+| `--val_dataset` | - | Dataset for validation |
+| `--test_dataset` | - | List of downstream datasets to evaluate on |
+| `--test_size_threshold` | 0 | Max samples per test dataset (0 = all) |
+| `--data_sub_url` | swin_base_7_checkpoint | Base PTM feature extractor name |
+| `--heterogeneous` | False | Enable multi-source model zoo mode |
+| `--lr` | 0.01 | Learning rate |
+| `--weight_decay` | 0.00005 | L2 regularization weight |
+| `--momentum` | 0.8 | Momentum for optimizer |
+| `--max_epoch` | 50 | Number of training epochs |
+| `--optimizer` | Adam | Optimizer type (Adam, SGD) |
+| `--num_learnware` | 72 | Number of PTMs to rank |
+| `--batch_size` | 128 | Batch size for training/testing |
+| `--dataset_size_threshold` | 0 | Max training samples (0 = all) |
+| `--lr_scheduler` | cosine | Learning rate scheduler type |
+| `--val_ratio` | 0.2 | Validation split ratio |
+| `--fixed_gt_size_threshold` | 128 | Max fixed ground-truth samples |
+| `--heterogeneous_sampled_maxnum` | 10 | Max heterogeneous backbones to sample |
+| `--data_url` | - | Path to prototype data folder |
+| `--log_url` | - | Path to save logs |
+| `--pretrained_url` | None | Path to pretrained weights (skips training if set) |
+| `--num_workers` | 8 | DataLoader worker processes |
+| `--gpu` | 0 | GPU device ID |
+| `--attn_pool` | cls | Attention pooling method (cls/mean) |
+
+---
+
+
