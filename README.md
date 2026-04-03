@@ -122,6 +122,9 @@ python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c1
 
 This mode ranks **66 PTMs** — combinations of 3 architectures (DenseNet-201, Inception-V3, ResNet-50) fine-tuned on 22 datasets each.
 
+### Important:
+To run 66 PTM mode, your current prototype data needs to be regenerated with features for all 66 PTMs. The ```tools/feature_extractor.py``` script can help with that, or you need to provide the 66 fine-tuned model weights yourself. let me know if you need help with that.
+
 ### The 66 PTMs:
 
 | Architecture | Datasets |

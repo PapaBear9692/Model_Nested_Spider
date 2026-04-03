@@ -98,7 +98,10 @@ class LearnwareDataset(Dataset):
         elif isinstance(x, list):
             ret_x, pad_length = pad_x(x[0])
             if self.heterogeneous:
-                sample_hete = {k: x[1][k] for k in BKB_SPECIFIC_RANK}
+                # Previously: sample_hete = {k: x[1][k] for k in BKB_SPECIFIC_RANK}
+                # Only use keys that exist in the data (handles both 10 and 66 PTM modes)
+                available_keys = [k for k in BKB_SPECIFIC_RANK if k in x[1]]
+                sample_hete = {k: x[1][k] for k in available_keys}
                 # print(self.samples[index][0], [len(sample_hete[ii]) for ii in sample_hete.keys()])
                 ret_x = (ret_x, sample_hete)
             if len(x) == 3:

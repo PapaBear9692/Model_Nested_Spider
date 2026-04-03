@@ -160,3 +160,43 @@ The Model-Spider approach works well for **natural image datasets** where pre-tr
 1. **Try different k values** for your specific use case
 2. **Fine-tune on domain-specific data** if working with specialized images
 3. **Compare with baseline methods** (LEEP, LogME, H-Score) in the `mptms/` folder
+
+---
+
+## 66 PTM Mode (Extended)
+
+### What Changed?
+
+The 66 PTM mode expands the model zoo from **10 PTMs** to **66 PTMs**:
+
+- **10 PTM Mode**: googlenet, inception_v3, resnet50, resnet101, resnet152, densenet121, densenet169, densenet201, mobilenet_v2, mnasnet1_0
+- **66 PTM Mode**: DenseNet-201, Inception-V3, ResNet-50 — each fine-tuned on 22 datasets (AID, Aircraft, CIFAR10, CIFAR100, CUB2011, Caltech101, Cars, DTD, Dogs, EuroSAT, Flowers, Food, ImageNet, NABirds, PACS, Pet, Resisc45, STL10, SUN397, SVHN, SmallNORB, VLCS)
+
+### How to Enable
+
+Set environment variable `MODELS42=yes` and use `--num_learnware 66`:
+
+```powershell
+# Windows PowerShell
+$env:MODELS42="yes"; python trainer.py --seed 0 --train_dataset c86 c59 c16 c14 c38 c43 c9 c12 c32 c19 c31 c57 c29 --val_dataset c86 --test_dataset CIFAR10 Caltech101 DTD Pet Aircraft CIFAR100 Cars SUN397 dSprites --test_size_threshold 0 --data_sub_url swin_base_7_checkpoint --heterogeneous --lr 0.00025 --weight_decay 0.0005 --momentum 0.5 --max_epoch 30 --optimizer Adam --num_learnware 66 --batch_size 8 --dataset_size_threshold 0 --lr_scheduler cosine --val_ratio 0.05 --fixed_gt_size_threshold 0 --heterogeneous_sampled_maxnum 10 --data_url "D:\Study\Thesis\Model_Nested_Spider\required_files\data\implclproto" --log_url "D:\Study\Thesis\Model_Nested_Spider\required_files\log" --num_workers 0
+```
+
+### ⚠️ Data Requirements
+
+**Important:** The 66 PTM mode requires prototype data files (.pkl) that contain features for all 66 PTMs. If your data only has 10 PTM features, you need to either:
+
+1. **Generate new prototype data** using `tools/feature_extractor.py`
+2. **Or stick with 10 PTM mode** until you data is regenerated
+
+### Key Differences
+
+| Aspect | 10 PTM Mode | 66 PTM Mode |
+|-------|-------------|-------------|
+| PTMs to Rank | 10 | 66 |
+| Model Zoo | Standard architectures | Fine-tuned variants |
+| Memory Usage | Lower | Higher |
+| Training Time | Faster | ~6-7x slower |
+| Batch Size | 16 | 8 (recommended) |
+| Data Required | 10 PTM features | 66 PTM features |
+
+> **Warning:** If you get `KeyError` for PTM names, your prototype data doesn't have features for all 66 PTMs. You need to regenerate the data first.
