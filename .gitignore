@@ -8,6 +8,14 @@ required_files/*
 # C extensions
 *.so
 
+# Ignoring files
+.claude
+.vscode
+.venv
+venv
+.env
+
+
 # Distribution / packaging
 .Python
 build/
