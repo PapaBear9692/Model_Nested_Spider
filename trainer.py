@@ -1,6 +1,7 @@
 import torch
 import os
 import random
+import time
 
 import logging
 import hashlib
@@ -344,6 +345,8 @@ class Trainer(object):
 
     def fit(self):
         if not self.do_train:
+            infer_start = time.time()
+            torch.cuda.reset_peak_memory_stats()
             epoch = 0
             # Test for k=0
             LearnwareDataset.__heterogeneous_sampled_fixnum__ = 0
@@ -362,7 +365,7 @@ class Trainer(object):
                 _, cur_mt_hete_results = self.test(epoch)
                 for key_dataset in cur_mt_hete_results.keys():
                     mt_hete_results[key_dataset][sample_num] = cur_mt_hete_results[key_dataset][sample_num]
-            
+
             # logging
             sample_num_averages = {}
             for key_dataset, sample_results in mt_hete_results.items():
@@ -379,8 +382,18 @@ class Trainer(object):
             print("best heterogeneous_sample_num:", max_sample_num)
             for key_dataset in cur_mt_hete_results.keys():
                 print(f"wtau of {key_dataset}:", mt_hete_results[key_dataset][max_sample_num])
+
+            infer_time = time.time() - infer_start
+            peak_mem_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+            gpu_name = torch.cuda.get_device_name()
+            logging.info(f'=== Inference Summary ===')
+            logging.info(f'Total inference time: {infer_time:.1f}s')
+            logging.info(f'Peak GPU memory: {peak_mem_mb:.0f} MB')
+            logging.info(f'GPU: {gpu_name}')
             return
   
+        train_start = time.time()
+        torch.cuda.reset_peak_memory_stats()
         for epoch in range(1, self.args.max_epoch + 1):
             self.model.train()
             logging.info(f'[{epoch} / {self.args.max_epoch}] lr: {self.lr_scheduler.get_last_lr()[0]:.5f}')
@@ -439,6 +452,14 @@ class Trainer(object):
             LearnwareDataset.__heterogeneous_prefetch_rank__ = None
             LearnwareDataset.__heterogeneous_sampled_fixnum__ = None
             LearnwareDataset.__heterogeneous_prefetch_rank__ = None
+
+        train_time = time.time() - train_start
+        peak_mem_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+        gpu_name = torch.cuda.get_device_name()
+        logging.info(f'=== Training Summary ===')
+        logging.info(f'Total training time: {train_time:.1f}s ({train_time / 60:.1f}min)')
+        logging.info(f'Peak GPU memory: {peak_mem_mb:.0f} MB')
+        logging.info(f'GPU: {gpu_name}')
 
         # self.log2unified()
         # self.log_handle.log_pickle(self.best_state, 'unified_results.pkl')

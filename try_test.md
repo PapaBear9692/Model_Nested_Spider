@@ -95,3 +95,29 @@ Each row: `epoch,dataset_name,metric_value`
 - **Positive delta** = hierarchical mode is better
 - **Negative delta** = original mode is better
 - Look at the average across all datasets for the overall picture
+
+---
+
+## Resource Usage Output
+
+At the end of training or inference, you'll see a summary like:
+
+### Training
+```
+=== Training Summary ===
+Total training time: 342.5s (5.7min)
+Peak GPU memory: 1234 MB
+GPU: NVIDIA GeForce RTX 3090
+```
+
+### Inference
+```
+=== Inference Summary ===
+Total inference time: 45.2s
+Peak GPU memory: 876 MB
+GPU: NVIDIA GeForce RTX 3090
+```
+
+- **Total time** — wall-clock time from start to finish of the training/inference run
+- **Peak GPU memory** — maximum GPU memory used during the run (lower is better, especially for 100 PTMs)
+- **GPU** — the GPU device used (useful to confirm you're running on the right hardware)
