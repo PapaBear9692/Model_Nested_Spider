@@ -70,7 +70,10 @@ class Trainer(object):
 
     def __init__(self, args):
         if args.time_str == '':
-            args.time_str = datetime.datetime.now().strftime('%m%d-%H-%M-%S-%f')[:-3]
+            mode_prefix = 'hier' if args.use_hierarchy else 'norm'
+            phase_prefix = 'infer' if args.pretrained_url is not None else 'train'
+            timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+            args.time_str = f'{mode_prefix}_{phase_prefix}_{timestamp}'
 
         train_dataset_str = '_'.join(sorted(args.train_dataset))
         if len(train_dataset_str) > 64:
