@@ -155,6 +155,12 @@ class HierarchicalClusterLayer(nn.Module):
         self._aux_L1 = None
         self._aux_L2 = None
 
+        # Inference pass counters
+        self._inference_passes = {'l1': 0, 'l2': 0, 'leaf': 0}
+
+    def reset_inference_counters(self):
+        self._inference_passes = {'l1': 0, 'l2': 0, 'leaf': 0}
+
     def _score_level(self, tokens, task_emb, attn_module, score_head):
         """Score a set of tokens against a task embedding.
 
@@ -212,13 +218,17 @@ class HierarchicalClusterLayer(nn.Module):
         device = task_emb.device
         num_learnware = self.tree.num_leaves
 
+        self.reset_inference_counters()
+
         # Step 1: Score L1 clusters and select top-K
         l1_scores = self._score_level(self.cluster_tokens_L1, task_emb, self.attn_L1, self.score_L1)
+        self._inference_passes['l1'] = self.tree.num_l1
         top_k_L1 = min(top_k_L1, self.tree.num_l1)
         top_l1_indices = torch.topk(l1_scores, top_k_L1, dim=-1).indices  # [batch, top_k_L1]
 
         # Step 2: Score L2 families and select top-K per selected L1
         l2_scores = self._score_level(self.cluster_tokens_L2, task_emb, self.attn_L2, self.score_L2)
+        self._inference_passes['l2'] = self.tree.num_l2
 
         # Build candidate leaf set per batch element
         candidate_leaves = [[] for _ in range(batch_size)]
@@ -249,6 +259,7 @@ class HierarchicalClusterLayer(nn.Module):
             return torch.full((batch_size, num_learnware), float('-inf'), device=device)
 
         # Score ONLY the candidate PTMs (skip the rest — this is the speedup)
+        self._inference_passes['leaf'] = len(sorted_candidates)
         candidate_scores = base_model.forward(
             x_uni, x_hete, attn_mask, attn_mask_func,
             candidate_indices=sorted_candidates

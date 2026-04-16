@@ -390,6 +390,13 @@ class Trainer(object):
             logging.info(f'Total inference time: {infer_time:.1f}s')
             logging.info(f'Peak GPU memory: {peak_mem_mb:.0f} MB')
             logging.info(f'GPU: {gpu_name}')
+            if self.args.use_hierarchy:
+                passes = self.model.cluster_layer._inference_passes
+                total_passes = passes['l1'] + passes['l2'] + passes['leaf']
+                pruned = self.args.num_learnware - passes['leaf']
+                logging.info(f'Attention passes: L1={passes["l1"]}, L2={passes["l2"]}, Leaf={passes["leaf"]}, Total={total_passes} (pruned {pruned}/{self.args.num_learnware} PTMs)')
+            else:
+                logging.info(f'Attention passes: Total={self.args.num_learnware} (all PTMs scored)')
             return
   
         train_start = time.time()

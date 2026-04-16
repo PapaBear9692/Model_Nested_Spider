@@ -136,6 +136,7 @@ class LearnwareCAHeterogeneous(nn.Module):
 
         # Which prompts to score: all (default) or only candidates (hierarchical inference)
         prompt_range = candidate_indices if candidate_indices is not None else range(model_prompt.shape[1])
+        self._last_forward_passes = len(list(prompt_range)) if not isinstance(prompt_range, range) else len(prompt_range)
 
         outputs = []
         for i_prompt in prompt_range:
