@@ -40,8 +40,8 @@ The cross-attention mechanism in the current model learns to match "which PTM fi
 
 Each cluster node gets a **learnable token** (a vector in the same embedding space as the model prompts). These tokens serve as compressed representations of the models within each cluster:
 
-- **L1 cluster tokens** (5 tokens): Represent broad architecture paradigms (CNN Classic, CNN Modern, CNN Lightweight, Transformer, Hybrid)
-- **L2 family tokens** (24 tokens): Represent specific architecture families (ResNet, DenseNet, ViT, Swin, etc.)
+- **L1 cluster tokens**: 2 tokens (10 PTMs) or 5 tokens (100 PTMs). Represent broad architecture paradigms.
+- **L2 family tokens**: 4 tokens (10 PTMs) or 23 tokens (100 PTMs). Represent specific architecture families (ResNet, DenseNet, ViT, Swin, etc.)
 
 During training, these tokens are learned end-to-end through the auxiliary loss. The gradient signal comes from: "which cluster/family did the best PTM belong to?" — this teaches the tokens to capture the *discriminative features* of their member models.
 
@@ -49,7 +49,7 @@ During training, these tokens are learned end-to-end through the auxiliary loss.
 
 ## The Hybrid Tree Approach
 
-The tree is **initialized** from known architecture families (providing a meaningful starting point), but the cluster tokens are **fully learnable** during training. This means:
+The tree is **initialized** from known architecture families (providing a meaningful starting point), but the cluster tokens are **fully learnable** during training. The cluster scoring uses a custom `_ClusterAttention` module (separate from the base model's `MultiHeadAttention`) with its own parameters, plus a `task_proj` linear layer that projects the task embedding before combining it with each cluster token. This means:
 
 - If two architecture families consistently rank similarly across training tasks, their cluster tokens will converge (the model learns they're redundant)
 - If an architecture family spans very different behaviors (e.g., small vs large variants), the gradient signal can shift the token to represent the dominant pattern
@@ -78,29 +78,54 @@ The auxiliary losses at L1 and L2 levels use standard `CrossEntropyLoss`, not `H
 
 ---
 
-## Tree Structure (100 PTMs)
+## Tree Structures
+
+### 10 PTMs (default, `CLUSTER_TREE_10` in `learnware_info.py`)
+
+```
+Level 0: Root (task embedding)
+  ├── Level 1: cnn_classic (8)        → resnet(3), densenet(3), classical(2)
+  └── Level 1: cnn_lightweight (2)    → mobilenet(2)
+```
+
+Traversal: 2 L1 clusters → 4 L2 families → 10 leaf PTMs.
+
+### 100 PTMs (`PTM100=yes`, `CLUSTER_TREE_100` in `learnware_info_100.py`)
 
 ```
 Level 0: Root (task embedding)
   ├── Level 1: cnn_classic (20)       → ResNet(5), DenseNet(4), VGG(8), Classical(3)
   ├── Level 1: cnn_modern (26)        → EfficientNet(8), EfficientNetV2(4), RegNet-Y(7), RegNet-X(7)
   ├── Level 1: cnn_lightweight (11)   → MobileNet(5), ShuffleNet(4), SqueezeNet(2)
-  ├── Level 1: transformer (31)       → ViT(4), Swin(4), DeiT(4), MaxViT(3), MobileViT(3), CoaT(3), LeViT(3), Twins(3), PiT/CaiT/TNT(4)
+  ├── Level 1: transformer (31)       → ViT(4), Swin(4), DeiT(4), MaxViT(3), MobileViT(3), CoaT(3), LeViT(3), Twins(3), PiT/CaiT(4)
   └── Level 1: hybrid_specialized (11) → ConvNeXt(4), ConvNeXtV2(4), HRNet(3)
 ```
 
-Traversal: 5 L1 clusters → ~24 L2 families → 100 leaf PTMs.
+Traversal: 5 L1 clusters → 23 L2 families → 100 leaf PTMs.
 
 ---
 
 ## Speedup Analysis
 
-| Component | Flat (100 PTMs) | Hierarchical | Attention Passes |
-|-----------|-----------------|-------------|------------------|
-| L1 cluster scoring | — | Score all 5 clusters | 5 |
-| L2 family scoring | — | Score ~12 families in top-K1 clusters | ~12 |
-| Leaf PTM scoring | Score all 100 | Score ~20 candidates in top-K2 families | ~20 |
-| **Total** | **100 passes** | **~37 passes** | **~2.7x faster** |
+### 10 PTMs
+
+| Component | Flat | Hierarchical (top_k_L1=1, top_k_families=2) |
+|-----------|------|----------------------------------------------|
+| L1 scoring | — | 2 passes |
+| L2 scoring | — | ~2 passes (2 families in 1 cluster) |
+| Leaf scoring | 10 passes | ~5-8 candidates |
+| **Total** | **10 passes** | **~10 passes** (minimal gain at this scale) |
+
+At 10 PTMs the tree is too small for meaningful speedup. The benefit here is accuracy improvement from auxiliary losses.
+
+### 100 PTMs
+
+| Component | Flat | Hierarchical (top_k_L1=2, top_k_families=2) |
+|-----------|------|----------------------------------------------|
+| L1 scoring | — | 5 passes |
+| L2 scoring | — | ~12 passes (families in top-2 clusters) |
+| Leaf scoring | 100 passes | ~20-40 candidates |
+| **Total** | **100 passes** | **~37-57 passes** | **~1.8-2.7x faster** |
 
 With aggressive pruning (`top_k_L1=2, top_k_families=1`): 5 + 6 + 8 = **19 passes** (~5.3x faster).
 
@@ -113,12 +138,16 @@ The trade-off: more aggressive pruning → faster inference but potentially lowe
 The key insight is that **both the model and the loss keep their exact same call signatures**:
 
 1. **Model:** `forward(x_uni, x_hete, attn_mask, ...)` always returns `[batch, num_learnware]`
-   - During training: computes all levels (no pruning), stores auxiliary outputs as `self._aux_L1` and `self._aux_L2`
+   - During training: computes all levels (no pruning), stores auxiliary outputs as `self.cluster_layer._aux_L1` and `self.cluster_layer._aux_L2`
    - During eval: prunes via tree traversal, returns scores with `-inf` for pruned PTMs
 
-2. **Loss:** `forward(logits, labels)` always accepts the same two arguments
-   - Internally reads auxiliary outputs from the model via a reference pointer
+2. **Base model `candidate_indices`:** The original `LearnwareCAHeterogeneous.forward()` accepts an optional `candidate_indices` parameter. When provided, the attention loop only iterates over those PTM indices instead of all `num_learnware`. This is the key mechanism for inference speedup — the hierarchical model passes only the surviving candidate indices to the base model.
+
+3. **Loss:** `forward(logits, labels)` always accepts the same two arguments
+   - Internally reads auxiliary outputs from `model_ref.cluster_layer._aux_L1` and `_aux_L2`
    - When aux outputs are None (eval mode), it just computes the original `HierarchicalCE` loss
+
+4. **Property delegates:** `HierarchicalLearnwareCA` exposes `uni_linear` and `hete_linears` as `@property` delegates to `self.base_model`, so `trainer.py`'s `preprocess_hete_inputs()` works unchanged.
 
 This means `trainer.py`'s training loop, test loop, and preprocessing never change. The only modification is in `__init__()` where model and loss construction is conditional on `--use_hierarchy`.
 
@@ -138,19 +167,19 @@ model.forward(x_uni, x_hete, attn_mask, ...)                    ← SAME CALL SI
        ├─ 1. Build task embedding:
        │      task_emb = mean(x_uni, dim=1) → [batch, 1, 1024]
        │
-       ├─ 2. L1 cluster scoring (ALL 5 clusters, no pruning):
+       ├─ 2. L1 cluster scoring (ALL clusters, no pruning):
        │      For each L1 token:
-       │        concat([L1_token_i, task_emb]) → [batch, 2, 1024]
-       │        → attn_L1 → CLS → score_L1 → scalar
-       │      Store as model._aux_L1 = [batch, 5]
+       │        concat([L1_token_i, task_proj(task_emb)]) → [batch, 2, 1024]
+       │        → _ClusterAttention → CLS → score_L1 → scalar
+       │      Store as cluster_layer._aux_L1 = [batch, num_l1]
        │
-       ├─ 3. L2 family scoring (ALL ~24 families, no pruning):
+       ├─ 3. L2 family scoring (ALL families, no pruning):
        │      For each L2 token:
-       │        concat([L2_token_j, task_emb]) → [batch, 2, 1024]
-       │        → attn_L2 → CLS → score_L2 → scalar
-       │      Store as model._aux_L2 = [batch, 24]
+       │        concat([L2_token_j, task_proj(task_emb)]) → [batch, 2, 1024]
+       │        → _ClusterAttention → CLS → score_L2 → scalar
+       │      Store as cluster_layer._aux_L2 = [batch, num_l2]
        │
-       ├─ 4. Leaf PTM scoring (ALL 100 PTMs — same as original):
+       ├─ 4. Leaf PTM scoring (ALL PTMs — same as original):
        │      For each model_prompt i in 0..99:
        │        concat([prompt_i, x_uni, x_hete[i]]) → [batch, seq_len, 1024]
        │        → base_model.transformer → CLS → mlp_head → scalar
@@ -162,16 +191,16 @@ criterion(outputs, labels)                                       ← SAME CALL S
        │
        ├─ Main loss: HierarchicalCE(outputs, labels)             ← SAME AS ORIGINAL
        │
-       ├─ Aux L1 loss: CE(model._aux_L1, l1_labels) × 0.3       ← NEW, via model reference
-       │   (l1_labels = cluster containing the best PTM)
+       ├─ Aux L1 loss: CE(model.cluster_layer._aux_L1, l1_labels) × 0.3  ← NEW, via model reference
+       │   (l1_labels from cluster_tree.get_best_cluster_labels(labels))
        │
-       └─ Aux L2 loss: CE(model._aux_L2, l2_labels) × 0.2       ← NEW, via model reference
-           (l2_labels = family containing the best PTM)
+       └─ Aux L2 loss: CE(model.cluster_layer._aux_L2, l2_labels) × 0.2  ← NEW, via model reference
+           (l2_labels from cluster_tree.get_best_cluster_labels(labels))
        ↓
 Backprop → updates model_prompts + cluster_tokens + all attention weights
 ```
 
-**Key insight during training:** All 100 PTMs are scored (no pruning) so gradients flow to all model prompts. The auxiliary losses train the cluster tokens to predict which cluster/family is best, so they become meaningful for inference-time pruning.
+**Key insight during training:** All PTMs are scored (no pruning) so gradients flow to all model prompts. The auxiliary losses train the cluster tokens to predict which cluster/family is best, so they become meaningful for inference-time pruning.
 
 ---
 
@@ -187,19 +216,20 @@ model.forward(x_uni, x_hete, attn_mask, ...)                    ← SAME CALL SI
        ├─ 1. Build task embedding:
        │      task_emb = mean(x_uni, dim=1) → [batch, 1, 1024]
        │
-       ├─ 2. L1 COARSE scoring (5 clusters → select top-3):
-       │      Score each L1 cluster token against task_emb
-       │      Cost: 5 attention passes
-       │      e.g. selected: [cnn_classic, transformer, hybrid_specialized]
+       ├─ 2. L1 COARSE scoring (select top-K1 clusters):
+       │      Score each L1 cluster token against task_proj(task_emb)
+       │      Cost: num_l1 attention passes (2 or 5)
+       │      e.g. selected: [cnn_classic, transformer]
        │
-       ├─ 3. L2 FAMILY scoring (families in 3 selected clusters → top-2 each):
+       ├─ 3. L2 FAMILY scoring (families in selected clusters → top-K2 each):
        │      Score family tokens within selected clusters
-       │      Cost: ~12 attention passes
-       │      e.g. selected: [resnet, densenet, vit, swin, convnext, convnextv2]
+       │      Cost: ~num_l2 attention passes
+       │      e.g. selected: [resnet, densenet, vit, swin]
        │
-       ├─ 4. LEAF scoring (PTMs in ~6 selected families):
-       │      Score only the candidate PTMs using original attention logic
-       │      Cost: ~20 attention passes (instead of 100)
+       ├─ 4. LEAF scoring (PTMs in selected families only):
+       │      Score only candidate PTMs via base_model.forward(candidate_indices=...)
+       │      The base model loop iterates only over candidate indices, skipping pruned PTMs
+       │      Cost: ~20-60 attention passes (instead of 10 or 100)
        │
        └─ Return: scores [batch, 100]                            ← SAME SHAPE
                    Real scores for ~20 selected PTMs
@@ -231,7 +261,9 @@ The existing two-phase testing in `fit()` works unchanged with hierarchical mode
 **To rollback:**
 1. Remove `--use_hierarchy` flag from your command
 2. (Optional) delete `learnware/hierarchical_cluster.py`
-3. (Optional) remove the appended classes in `model.py`, `loss.py`, `learnware_info_100.py`
-4. (Optional) revert the `if/else` in `trainer.py.__init__()` back to the original single-path
+3. (Optional) remove `CLUSTER_TREE_10` from `learnware_info.py` and `CLUSTER_TREE_100` from `learnware_info_100.py`
+4. (Optional) remove the appended classes in `model.py`, `loss.py`
+5. (Optional) remove the `candidate_indices` parameter from `LearnwareCAHeterogeneous.forward()`
+6. (Optional) revert the `if/else` in `trainer.py.__init__()` back to the original single-path
 
-The appended code in `model.py`, `loss.py`, and `learnware_info_100.py` is inert when `--use_hierarchy` is not set — it's never imported or executed.
+The appended code in `model.py`, `loss.py`, and `learnware_info*.py` is inert when `--use_hierarchy` is not set — it's never imported or executed.

@@ -14,17 +14,37 @@ Add a hierarchical clustering layer that organizes 100 PTMs into a coarse-to-fin
 
 | File | Change Type | Lines Touched |
 |------|-------------|---------------|
-| `learnware/learnware_info_100.py` | APPEND config dict at end | ~60 lines added |
-| `learnware/hierarchical_cluster.py` | **NEW FILE** | ~300 lines |
-| `learnware/model.py` | APPEND new class after existing one | ~90 lines added |
-| `learnware/loss.py` | APPEND new class after existing ones | ~50 lines added |
-| `trainer.py` | MODIFY `__init__` only — conditional model/loss swap | ~15 lines changed |
+| `learnware/learnware_info.py` | APPEND `CLUSTER_TREE_10` dict at end | ~12 lines added |
+| `learnware/learnware_info_100.py` | APPEND `CLUSTER_TREE_100` dict at end | ~60 lines added |
+| `learnware/hierarchical_cluster.py` | **NEW FILE** | ~310 lines |
+| `learnware/model.py` | APPEND new class + MODIFY `forward()` signature | ~100 lines added |
+| `learnware/loss.py` | APPEND new class after existing ones | ~35 lines added |
+| `trainer.py` | MODIFY `__init__` + ADD timing/resource output | ~25 lines changed |
 
-**NOT touched:** `dataset.py`, `utils.py`, `preprocess_hete_inputs()`, `fit()` training loop, `test()`, `measure_test()`, `collate_fn()`, `mptms/`, `datasets/`, `learnware_info.py` (10 PTM mode).
+**NOT touched:** `dataset.py`, `utils.py`, `preprocess_hete_inputs()`, `test()`, `measure_test()`, `collate_fn()`, `mptms/`, `datasets/`.
 
 ---
 
-## Step 1: Define Cluster Tree Config
+## Step 1: Define Cluster Tree Configs
+
+### File: `learnware/learnware_info.py` — APPEND ~12 lines at end
+
+Add a `CLUSTER_TREE_10` dictionary for the 10-PTM mode:
+
+```python
+CLUSTER_TREE_10 = {
+    'cnn_classic': {
+        'resnet': ['resnet50', 'resnet101', 'resnet152'],
+        'densenet': ['densenet121', 'densenet169', 'densenet201'],
+        'classical': ['googlenet', 'inception_v3'],
+    },
+    'cnn_lightweight': {
+        'mobilenet': ['mobilenet_v2', 'mnasnet1_0'],
+    },
+}
+```
+
+Total: 2 L1 clusters, 4 L2 families, 10 leaf PTMs.
 
 ### File: `learnware/learnware_info_100.py` — APPEND ~60 lines at end (before `if is_100_mode():`)
 
@@ -77,7 +97,7 @@ CLUSTER_TREE_100 = {
 }
 ```
 
-Total: 5 L1 clusters, 24 L2 families, 100 leaf PTMs.
+Total: 5 L1 clusters, 23 L2 families, 100 leaf PTMs.
 Assert `sum of all leaves == 100` and `all names in BKB_100_SPECIFIC_RANK`.
 
 ---
@@ -88,19 +108,19 @@ Assert `sum of all leaves == 100` and `all names in BKB_100_SPECIFIC_RANK`.
 
 Contains 3 components:
 
-### 2a. `ClusterTree` class (~100 lines)
+### 2a. `ClusterTree` class (~120 lines)
 
-Static tree data structure. No learnable parameters.
+Static tree data structure. No learnable parameters. Precomputes index tensors for vectorized inference.
 
 ```python
 class ClusterTree:
-    """Parses CLUSTER_TREE_100 into index structures."""
+    """Parses CLUSTER_TREE_10/100 into index structures."""
 
     def __init__(self, tree_config: dict, all_models: list):
         # Build ordered lists
-        self.level1_names = list(tree_config.keys())           # 5 names
-        self.level2_names = []                                  # 24 names
-        self.leaf_names = all_models                            # 100 names (from BKB_100_SPECIFIC_RANK)
+        self.level1_names = list(tree_config.keys())
+        self.level2_names = []                                  # flattened across all L1 clusters
+        self.leaf_names = all_models                            # from BKB_SPECIFIC_RANK
 
         # Build index maps
         self.level1_to_idx = {n: i for i, n in enumerate(self.level1_names)}
@@ -114,6 +134,7 @@ class ClusterTree:
         # family_to_leaves: L2_idx → [global_leaf_idx, ...]
 
         # ... populate from tree_config ...
+        # ... then call _build_tensors() for precomputed padded tensors ...
 
     def get_families(self, l1_idx):
         """Return L2 family indices for a given L1 cluster."""
@@ -122,86 +143,125 @@ class ClusterTree:
     def get_leaves(self, l2_idx):
         """Return global PTM indices for a given L2 family."""
         ...
+
+    def get_best_cluster_labels(self, labels):
+        """Derive L1 and L2 labels from ground-truth rankings.
+
+        Args:
+            labels: [batch, num_learnware] — higher value = better rank
+        Returns:
+            l1_labels: [batch] — index of L1 cluster containing best PTM
+            l2_labels: [batch] — index of L2 family containing best PTM
+        """
+        best_ptm_idx = labels.argmax(dim=-1)
+        paths = self._leaf_path_tensor.to(labels.device)[best_ptm_idx]
+        return paths[:, 0], paths[:, 1]
 ```
 
 ### 2b. `HierarchicalClusterLayer(nn.Module)` (~150 lines)
 
-Learnable cluster navigation. Contains cluster tokens and separate attention modules.
+Learnable cluster navigation. Contains cluster tokens, a task projection layer, and separate `_ClusterAttention` modules.
 
 ```python
 class HierarchicalClusterLayer(nn.Module):
-    def __init__(self, cluster_tree: ClusterTree, dim: int, heads: int = 1):
+    def __init__(self, cluster_tree: ClusterTree, dim: int, heads: int = 1, dropout: float = 0.1):
         super().__init__()
         self.tree = cluster_tree
+        self.dim = dim
 
         # Learnable tokens for each tree level
-        self.cluster_tokens_L1 = nn.Parameter(torch.randn(1, tree.get_num_l1(), dim))
-        self.cluster_tokens_L2 = nn.Parameter(torch.randn(1, tree.get_num_l2(), dim))
+        self.cluster_tokens_L1 = nn.Parameter(torch.randn(1, cluster_tree.num_l1, dim))
+        self.cluster_tokens_L2 = nn.Parameter(torch.randn(1, cluster_tree.num_l2, dim))
+
+        # Task projection (projects task embedding before combining with cluster tokens)
+        self.task_proj = nn.Linear(dim, dim)
 
         # Separate attention + scoring for L1 and L2
-        # (imports MultiHeadAttention from learnware.model)
-        self.attn_L1 = MultiHeadAttention(n_head=heads, d_model=dim, d_k=dim, d_v=dim, dropout=0.1)
-        self.attn_L2 = MultiHeadAttention(n_head=heads, d_model=dim, d_k=dim, d_v=dim, dropout=0.1)
+        # Uses custom _ClusterAttention (not MultiHeadAttention from base model)
+        self.attn_L1 = _ClusterAttention(dim, heads, dropout)
+        self.attn_L2 = _ClusterAttention(dim, heads, dropout)
         self.score_L1 = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
         self.score_L2 = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
+
+        # Stored auxiliary outputs (set during training forward)
+        self._aux_L1 = None
+        self._aux_L2 = None
 ```
 
 Key methods:
 
-**`score_level(tokens, task_emb, attn_module, score_head)`** — Generic scoring for one tree level:
+**`_score_level(tokens, task_emb, attn_module, score_head)`** — Generic scoring for one tree level:
 ```
 For each token:
-    concat([token, task_emb]) → [batch, 2, dim]
-    attended = attn_module(input, input, input, mask=None)
-    cls = attended[:, 0]
-    score = score_head(cls) → [batch, 1]
+    task_proj_emb = task_proj(task_emb)  → project task embedding
+    stack([tokens, task_proj_emb]) → [batch*num_tokens, 2, dim]
+    attended = _ClusterAttention(combined)  → [batch*num_tokens, 2, dim]
+    cls = attended[:, 0]  → [batch*num_tokens, dim]
+    score = score_head(cls) → [batch, num_tokens]
 Return: scores [batch, num_tokens]
 ```
 
 **`forward_training(task_emb, base_model, x_uni, x_hete, attn_mask, attn_mask_func)`**:
 ```
-1. Score ALL L1 clusters → self._aux_L1 = [batch, 5]  (stored as attribute)
-2. Score ALL L2 families → self._aux_L2 = [batch, 24] (stored as attribute)
-3. Score ALL 100 PTMs via base_model → final_scores [batch, 100]
-Return: final_scores [batch, 100]   ← SAME SHAPE AS ORIGINAL
+1. Clear stale aux outputs
+2. Score ALL L1 clusters → self._aux_L1 = [batch, num_l1]  (stored on self)
+3. Score ALL L2 families → self._aux_L2 = [batch, num_l2]  (stored on self)
+4. Score ALL PTMs via base_model.forward() → final_scores [batch, num_learnware]
+Return: final_scores [batch, num_learnware]   ← SAME SHAPE AS ORIGINAL
 ```
 
 **`forward_inference(task_emb, base_model, x_uni, x_hete, attn_mask, attn_mask_func, top_k_L1, top_k_families)`**:
 ```
-1. Score 5 L1 clusters → select top_k_L1
+1. Score all L1 clusters → select top_k_L1
 2. Score families in selected clusters → select top_k_families per cluster
-3. Score only candidate PTMs (~20) via base_model's loop (iterate only over candidates)
-4. Fill -inf for pruned PTMs
-Return: scores [batch, 100]   ← SAME SHAPE AS ORIGINAL
+3. Build candidate leaf set per batch element
+4. Find union of candidates across batch
+5. Score only candidate PTMs via base_model.forward(candidate_indices=sorted_candidates)
+6. Map candidate scores back to full [batch, num_learnware] tensor, fill -inf for pruned
+Return: scores [batch, num_learnware]   ← SAME SHAPE AS ORIGINAL
 ```
 
 **Critical:** Both methods return `[batch, num_learnware]` — identical to `LearnwareCAHeterogeneous.forward()`.
 
-### 2c. `derive_cluster_labels(labels, cluster_tree)` utility (~15 lines)
+### 2c. `_ClusterAttention(nn.Module)` (~40 lines)
+
+Custom self-attention module for cluster scoring (separate from the base model's `MultiHeadAttention`):
 
 ```python
-def derive_cluster_labels(labels, cluster_tree):
-    """
-    labels: [batch, num_learnware] — ground-truth rankings (higher = better)
-    Returns: l1_labels [batch], l2_labels [batch]
-    """
-    best_ptm_idx = labels.argmax(dim=-1)
-    l1_labels, l2_labels = [], []
-    for b in range(labels.shape[0]):
-        ptm_name = cluster_tree.leaf_names[best_ptm_idx[b]]
-        path = cluster_tree.leaf_to_path[ptm_name]
-        l1_labels.append(path[0])
-        l2_labels.append(path[1])
-    return torch.tensor(l1_labels), torch.tensor(l2_labels)
+class _ClusterAttention(nn.Module):
+    def __init__(self, dim, heads=1, dropout=0.1):
+        # Standard multi-head attention with LayerNorm + residual
+        self.w_qs = nn.Linear(dim, heads * dim, bias=False)
+        self.w_ks = nn.Linear(dim, heads * dim, bias=False)
+        self.w_vs = nn.Linear(dim, heads * dim, bias=False)
+        self.fc = nn.Linear(heads * dim, dim)
+        # ... Xavier initialization ...
 ```
 
 ---
 
-## Step 3: Add Hierarchical Model Wrapper
+## Step 3: Add Hierarchical Model Wrapper + Modify Base Model Forward
 
-### File: `learnware/model.py` — APPEND ~90 lines after `LearnwareCAHeterogeneous`
+### File: `learnware/model.py` — MODIFY `LearnwareCAHeterogeneous.forward()` + APPEND ~100 lines
 
-Add a new class. The existing `LearnwareCAHeterogeneous` is NOT modified.
+#### 3a. Modify `LearnwareCAHeterogeneous.forward()` signature
+
+Add an optional `candidate_indices` parameter. When provided (during hierarchical inference), the attention loop only iterates over those indices instead of all `num_learnware`:
+
+```python
+def forward(self, x_uni, x_hete, attn_mask, attn_mask_func=None,
+            permute_indices=None, candidate_indices=None):
+    # ...
+    prompt_range = candidate_indices if candidate_indices is not None else range(model_prompt.shape[1])
+    for i_prompt in prompt_range:
+        # ... existing attention logic unchanged ...
+```
+
+This is the key mechanism for inference speedup — pruned PTMs are never scored.
+
+#### 3b. Append `HierarchicalLearnwareCA` class
+
+Add a new class after `LearnwareCAHeterogeneous`. The existing class is otherwise NOT modified.
 
 ```python
 class HierarchicalLearnwareCA(nn.Module):
@@ -243,9 +303,15 @@ class HierarchicalLearnwareCA(nn.Module):
         self.top_k_L1 = top_k_L1
         self.top_k_families = top_k_families
 
-        # Aux outputs stored here during training forward
-        self._aux_L1 = None
-        self._aux_L2 = None
+    @property
+    def uni_linear(self):
+        """Delegate to base_model so preprocess_hete_inputs() works unchanged."""
+        return self.base_model.uni_linear
+
+    @property
+    def hete_linears(self):
+        """Delegate to base_model so preprocess_hete_inputs() works unchanged."""
+        return self.base_model.hete_linears
 
     def forward(self, x_uni, x_hete, attn_mask, attn_mask_func=None, permute_indices=None):
         """Same signature and return shape as LearnwareCAHeterogeneous.forward()."""
@@ -273,7 +339,7 @@ class HierarchicalLearnwareCA(nn.Module):
 
 ## Step 4: Add Combined Loss
 
-### File: `learnware/loss.py` — APPEND ~50 lines after existing loss classes
+### File: `learnware/loss.py` — APPEND ~35 lines after existing loss classes
 
 ```python
 class HierarchicalClusterLoss(nn.Module):
@@ -281,8 +347,8 @@ class HierarchicalClusterLoss(nn.Module):
     Drop-in replacement for HierarchicalCE.
 
     Same forward(logits, labels) signature.
-    Internally reads auxiliary outputs from the model reference to compute
-    cluster navigation losses.
+    Reads auxiliary outputs from model.cluster_layer._aux_L1 and _aux_L2.
+    During eval (aux outputs are None), computes only the main HierarchicalCE loss.
     """
     def __init__(self, num_learnware, cluster_tree, alpha=0.3, beta=0.2):
         super().__init__()
@@ -293,36 +359,34 @@ class HierarchicalClusterLoss(nn.Module):
         self.model_ref = None  # Set once by trainer
 
     def set_model(self, model):
-        """Wire up model reference so loss can read _aux_L1, _aux_L2."""
+        """Wire up model reference so loss can read cluster_layer._aux_L1, _aux_L2."""
         self.model_ref = model
 
     def forward(self, logits, labels):
-        # Main ranking loss — always computed, same as original
+        # Main ranking loss — always computed
         loss = self.main_loss(logits, labels)
 
-        # Auxiliary cluster losses — only when model stored aux outputs (training mode)
+        # Auxiliary cluster losses — only when model stored aux outputs (training)
         if (self.model_ref is not None
-            and hasattr(self.model_ref, '_aux_L1')
-            and self.model_ref._aux_L1 is not None):
+                and hasattr(self.model_ref, 'cluster_layer')
+                and self.model_ref.cluster_layer._aux_L1 is not None):
 
-            from learnware.hierarchical_cluster import derive_cluster_labels
-            l1_labels, l2_labels = derive_cluster_labels(labels, self.cluster_tree)
-            l1_labels = l1_labels.to(logits.device)
-            l2_labels = l2_labels.to(logits.device)
-
-            loss = loss + self.alpha * F.cross_entropy(self.model_ref._aux_L1, l1_labels)
-            loss = loss + self.beta * F.cross_entropy(self.model_ref._aux_L2, l2_labels)
+            l1_labels, l2_labels = self.cluster_tree.get_best_cluster_labels(labels)
+            loss = loss + self.alpha * F.cross_entropy(
+                self.model_ref.cluster_layer._aux_L1, l1_labels)
+            loss = loss + self.beta * F.cross_entropy(
+                self.model_ref.cluster_layer._aux_L2, l2_labels)
 
         return loss
 ```
 
-**Why this is safe:** `forward(logits, labels)` — same signature as `HierarchicalCE`. During eval, `model_ref._aux_L1` is None, so it just computes the main loss (identical to `HierarchicalCE`). During training, it adds the auxiliary losses by reading them from the model's stored attributes.
+**Why this is safe:** `forward(logits, labels)` — same signature as `HierarchicalCE`. During eval, `model_ref.cluster_layer._aux_L1` is None, so it just computes the main loss (identical to `HierarchicalCE`). During training, it reads the aux outputs from `model_ref.cluster_layer` (where `HierarchicalClusterLayer.forward_training()` stored them).
 
 ---
 
-## Step 5: Modify Trainer `__init__` Only
+## Step 5: Modify Trainer `__init__` + Add Timing Output
 
-### File: `trainer.py` — MODIFY only `__init__()`, ~15 lines changed
+### File: `trainer.py` — MODIFY `__init__()` + ADD timing in `fit()`, ~25 lines changed
 
 ### 5a. New CLI flags in `parse_trainer_args` (append after line 61)
 
@@ -348,19 +412,29 @@ self.model = self.model.to(torch.device('cuda'))
 ```python
 if args.use_hierarchy:
     from learnware.model import HierarchicalLearnwareCA
-    from learnware.learnware_info_100 import CLUSTER_TREE_100, BKB_100_SPECIFIC_RANK
+    from learnware.learnware_info import CLUSTER_TREE_10
+
+    # Pick cluster tree based on PTM count
+    _cluster_tree = CLUSTER_TREE_10
+    _all_models = list(BKB_SPECIFIC_RANK)
+    if os.environ.get('PTM100', '').lower() == 'yes':
+        from learnware.learnware_info_100 import CLUSTER_TREE_100
+        _cluster_tree = CLUSTER_TREE_100
+
     self.model = HierarchicalLearnwareCA(
         num_learnware=args.num_learnware,
         dim=args.dim, hdim=args.dim,
         uni_hete_proto_dim=(args.prototype_maxnum, args.prototype_maxnum_hete),
         data_sub_url=args.data_sub_url,
-        cluster_tree_config=CLUSTER_TREE_100,
-        all_models=BKB_100_SPECIFIC_RANK,
+        cluster_tree_config=_cluster_tree,
+        all_models=_all_models,
         top_k_L1=args.hier_top_k_L1,
         top_k_families=args.hier_top_k_families,
         pool=args.attn_pool, heads=1, dropout=0.1, emb_dropout=0.1,
         heterogeneous_extra_prompt=args.heterogeneous_extra_prompt
     )
+    logging.info(f'[Hierarchical Mode] L1={self.model.cluster_tree.num_l1}, '
+                 f'L2={self.model.cluster_tree.num_l2}, leaves={self.model.cluster_tree.num_leaves}')
 else:
     self.model = LearnwareCAHeterogeneous(
         num_learnware=args.num_learnware,
@@ -395,11 +469,16 @@ else:
 
 ### THAT'S IT FOR TRAINER CHANGES.
 
-The rest of `trainer.py` is completely untouched:
-- `fit()` training loop (lines 341-399) — **NO CHANGES**
-- `test()` method (lines 421-487) — **NO CHANGES**
-- `preprocess_hete_inputs()` (lines 215-300) — **NO CHANGES**
+The rest of `trainer.py`'s core logic is untouched:
+- `test()` method — **NO CHANGES**
+- `preprocess_hete_inputs()` — **NO CHANGES**
 - `get_attn_pad_mask()`, `get_attn_pad_hete_mask()` — **NO CHANGES**
+
+Minor additions to `fit()` (non-functional):
+- `import time` at top
+- Timestamp format: `{mode}_{phase}_{timestamp}` (e.g., `hier_train_20260416-193500`)
+- Timing/resource output: overall training time, inference time, peak GPU memory, GPU name
+- These are output-only and do not affect model behavior
 
 ---
 
@@ -419,23 +498,23 @@ model.forward(x_uni, x_hete, attn_mask, ...)                    ← SAME CALL SI
        ├─ 1. Build task embedding:
        │      task_emb = mean(x_uni, dim=1) → [batch, 1, 1024]
        │
-       ├─ 2. L1 cluster scoring (ALL 5 clusters, no pruning):
+       ├─ 2. L1 cluster scoring (ALL clusters, no pruning):
        │      For each L1 token:
-       │        concat([L1_token_i, task_emb]) → [batch, 2, 1024]
-       │        → attn_L1 → CLS → score_L1 → scalar
-       │      Store as model._aux_L1 = [batch, 5]
+       │        stack([L1_token_i, task_proj(task_emb)]) → [batch*2, 2, 1024]
+       │        → _ClusterAttention → CLS → score_L1 → scalar
+       │      Store as cluster_layer._aux_L1 = [batch, num_l1]
        │
-       ├─ 3. L2 family scoring (ALL ~24 families, no pruning):
+       ├─ 3. L2 family scoring (ALL families, no pruning):
        │      For each L2 token:
-       │        concat([L2_token_j, task_emb]) → [batch, 2, 1024]
-       │        → attn_L2 → CLS → score_L2 → scalar
-       │      Store as model._aux_L2 = [batch, 24]
+       │        stack([L2_token_j, task_proj(task_emb)]) → [batch*2, 2, 1024]
+       │        → _ClusterAttention → CLS → score_L2 → scalar
+       │      Store as cluster_layer._aux_L2 = [batch, num_l2]
        │
-       ├─ 4. Leaf PTM scoring (ALL 100 PTMs — same as original):
-       │      For each model_prompt i in 0..99:
+       ├─ 4. Leaf PTM scoring (ALL PTMs — same as original):
+       │      For each model_prompt i in 0..num_learnware-1:
        │        concat([prompt_i, x_uni, x_hete[i]]) → [batch, seq_len, 1024]
        │        → base_model.transformer → CLS → mlp_head → scalar
-       │      → final_scores [batch, 100]
+       │      → final_scores [batch, num_learnware]
        │
        └─ Return: final_scores [batch, 100]   ← SAME SHAPE
        ↓
@@ -443,11 +522,11 @@ criterion(outputs, labels)                                       ← SAME CALL S
        │
        ├─ Main loss: HierarchicalCE(outputs, labels)             ← SAME AS ORIGINAL
        │
-       ├─ Aux L1 loss: CE(model._aux_L1, l1_labels) × 0.3       ← NEW, via model reference
-       │   (l1_labels = cluster containing the best PTM)
+       ├─ Aux L1 loss: CE(model.cluster_layer._aux_L1, l1_labels) × 0.3  ← NEW
+       │   (l1_labels from cluster_tree.get_best_cluster_labels(labels))
        │
-       └─ Aux L2 loss: CE(model._aux_L2, l2_labels) × 0.2       ← NEW, via model reference
-           (l2_labels = family containing the best PTM)
+       └─ Aux L2 loss: CE(model.cluster_layer._aux_L2, l2_labels) × 0.2  ← NEW
+           (l2_labels from cluster_tree.get_best_cluster_labels(labels))
        ↓
 Backprop → updates model_prompts + cluster_tokens + all attention weights
 ```
@@ -464,33 +543,34 @@ model.forward(x_uni, x_hete, attn_mask, ...)                    ← SAME CALL SI
        ├─ 1. Build task embedding:
        │      task_emb = mean(x_uni, dim=1) → [batch, 1, 1024]
        │
-       ├─ 2. L1 COARSE scoring (5 clusters → select top-3):
-       │      Cost: 5 attention passes
-       │      e.g. selected: [cnn_classic, transformer, hybrid_specialized]
+       ├─ 2. L1 COARSE scoring (select top-K1 clusters):
+       │      Score each L1 token against task_proj(task_emb)
+       │      Cost: num_l1 attention passes (2 or 5)
        │
-       ├─ 3. L2 FAMILY scoring (families in 3 selected clusters → top-2 each):
-       │      Cost: ~12 attention passes
-       │      e.g. selected: [resnet, densenet, vit, swin, convnext, convnextv2]
+       ├─ 3. L2 FAMILY scoring (families in selected clusters → top-K2 each):
+       │      Score family tokens within selected clusters
+       │      Cost: varies by num_l2
        │
-       ├─ 4. LEAF scoring (PTMs in ~6 selected families):
-       │      Cost: ~20 attention passes (instead of 100)
-       │      Reuse base_model.transformer and mlp_head for each candidate
+       ├─ 4. LEAF scoring (PTMs in selected families only):
+       │      Score only candidates via base_model.forward(candidate_indices=...)
+       │      Base model loop skips pruned PTMs entirely
        │
-       └─ Return: scores [batch, 100]                            ← SAME SHAPE
-                   Real scores for ~20 selected PTMs
-                   -inf for ~80 pruned PTMs
+       └─ Return: scores [batch, num_learnware]                  ← SAME SHAPE
+                   Real scores for selected PTMs
+                   -inf for pruned PTMs
        ↓
 test() continues with rankings = argsort(scores)                 ← UNCHANGED
        ↓
 measure_test(rankings, labels) → weightedtau                     ← UNCHANGED
 ```
 
-**Total inference: 5 + 12 + 20 = ~37 attention passes** (vs 100 flat)
+**Total inference (100 PTMs): 5 + 12 + 20 = ~37 attention passes** (vs 100 flat)
 **With aggressive settings (top-2 L1, top-1 family): ~19 passes** (~5.3x faster)
+**Total inference (10 PTMs): 2 + 2 + 5 = ~9 attention passes** (vs 10 flat — minimal gain)
 
 ### Two-Phase Testing (k=0, k=1..10)
 
-Works unchanged. `fit()` calls `test()` → `model.eval()` → hierarchical pruning kicks in automatically. The k=0 phase is faster because only ~20 PTMs are scored. The k=1..10 phase adds heterogeneous features only to the survivors.
+Works unchanged. `fit()` calls `test()` → `model.eval()` → hierarchical pruning kicks in automatically. The k=0 phase scores only candidate PTMs. The k=1..10 phase adds heterogeneous features only to the survivors.
 
 ### Without `--use_hierarchy`
 
@@ -503,7 +583,11 @@ Everything is identical to the current code. The `else` branches in `__init__` c
 To revert, remove:
 1. `--use_hierarchy` flag from your command
 2. (Optional) delete `learnware/hierarchical_cluster.py`
-3. (Optional) remove the appended classes in `model.py`, `loss.py`, `learnware_info_100.py`
-4. (Optional) revert the `if/else` in `trainer.py.__init__()` back to the original single-path
+3. (Optional) remove `CLUSTER_TREE_10` from `learnware_info.py`
+4. (Optional) remove `CLUSTER_TREE_100` from `learnware_info_100.py`
+5. (Optional) remove the appended classes in `model.py`, `loss.py`
+6. (Optional) remove the `candidate_indices` parameter from `LearnwareCAHeterogeneous.forward()`
+7. (Optional) revert the `if/else` in `trainer.py.__init__()` back to the original single-path
+8. (Optional) remove timing/resource output from `trainer.py`
 
-The appended code in `model.py`, `loss.py`, and `learnware_info_100.py` is inert when `--use_hierarchy` is not set — it's never imported or executed.
+The appended code in `model.py`, `loss.py`, and `learnware_info*.py` is inert when `--use_hierarchy` is not set — it's never imported or executed.
