@@ -705,3 +705,31 @@ if MODELS42 == 'yes':
     DATA_SPECIFIC_RANK = DATA_FTD_SPECIFIC_RANK
     BKB_SPECIFIC_RANK  = BKB_FTD_SPECIFIC_RANK
     BKB_SPECIFIC_RANK2ID = BKB_FTD_SPECIFIC_RANK2ID
+
+# 100 PTM mode
+PTM100 = os.environ.get("PTM100")
+if PTM100 == 'yes':
+    from .learnware_info_100 import (
+        BKB_100_SPECIFIC_RANK,
+        BKB_100_SPECIFIC_RANK2ID,
+        MODEL_100_2FEAT_DIM,
+        CLUSTER_TREE_100,
+    )
+    BKB_SPECIFIC_RANK = BKB_100_SPECIFIC_RANK
+    BKB_SPECIFIC_RANK2ID = BKB_100_SPECIFIC_RANK2ID
+    MODEL2FEAT_DIM = {**MODEL2FEAT_DIM, **MODEL_100_2FEAT_DIM}  # keep base keys (swin, etc.)
+
+# =============================================================================
+# CLUSTER TREES FOR HIERARCHICAL MODE
+# =============================================================================
+
+CLUSTER_TREE_10 = {
+    'cnn_classic': {
+        'resnet': ['resnet50', 'resnet101', 'resnet152'],
+        'densenet': ['densenet121', 'densenet169', 'densenet201'],
+        'classical': ['googlenet', 'inception_v3'],
+    },
+    'cnn_lightweight': {
+        'mobilenet': ['mobilenet_v2', 'mnasnet1_0'],
+    },
+}

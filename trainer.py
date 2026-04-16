@@ -59,6 +59,13 @@ class Trainer(object):
         parser.add_argument('--heterogeneous_sampled_maxnum', type=int, default=10)
         parser.add_argument('--heterogeneous_prompt', action='store_true', default=False)
         parser.add_argument('--heterogeneous_extra_prompt', action='store_true', default=False)
+
+        # hierarchical clustering config (all opt-in, no effect when not set)
+        parser.add_argument('--use_hierarchy', action='store_true', default=False)
+        parser.add_argument('--hier_top_k_L1', type=int, default=3)
+        parser.add_argument('--hier_top_k_families', type=int, default=2)
+        parser.add_argument('--hier_alpha', type=float, default=0.3)
+        parser.add_argument('--hier_beta', type=float, default=0.2)
         return parser
 
     def __init__(self, args):
@@ -88,18 +95,43 @@ class Trainer(object):
 
         self.log_handle = LogHandle(args)
 
-        self.model = LearnwareCAHeterogeneous(
-            num_learnware=args.num_learnware,
-            dim=args.dim,
-            hdim=args.dim,
-            uni_hete_proto_dim=(args.prototype_maxnum, args.prototype_maxnum_hete),
-            data_sub_url=args.data_sub_url,
-            pool=args.attn_pool,
-            heads=1,
-            dropout=0.1,
-            emb_dropout=0.1,
-            heterogeneous_extra_prompt=args.heterogeneous_extra_prompt
-        )
+        if args.use_hierarchy:
+            from learnware.model import HierarchicalLearnwareCA
+            from learnware.learnware_info import CLUSTER_TREE_10
+
+            # Pick cluster tree based on PTM count
+            _cluster_tree = CLUSTER_TREE_10
+            _all_models = list(BKB_SPECIFIC_RANK)
+            if os.environ.get('PTM100', '').lower() == 'yes':
+                from learnware.learnware_info_100 import CLUSTER_TREE_100
+                _cluster_tree = CLUSTER_TREE_100
+
+            self.model = HierarchicalLearnwareCA(
+                num_learnware=args.num_learnware,
+                dim=args.dim, hdim=args.dim,
+                uni_hete_proto_dim=(args.prototype_maxnum, args.prototype_maxnum_hete),
+                data_sub_url=args.data_sub_url,
+                cluster_tree_config=_cluster_tree,
+                all_models=_all_models,
+                top_k_L1=args.hier_top_k_L1,
+                top_k_families=args.hier_top_k_families,
+                pool=args.attn_pool, heads=1, dropout=0.1, emb_dropout=0.1,
+                heterogeneous_extra_prompt=args.heterogeneous_extra_prompt
+            )
+            logging.info(f'[Hierarchical Mode] L1={self.model.cluster_tree.num_l1}, L2={self.model.cluster_tree.num_l2}, leaves={self.model.cluster_tree.num_leaves}')
+        else:
+            self.model = LearnwareCAHeterogeneous(
+                num_learnware=args.num_learnware,
+                dim=args.dim,
+                hdim=args.dim,
+                uni_hete_proto_dim=(args.prototype_maxnum, args.prototype_maxnum_hete),
+                data_sub_url=args.data_sub_url,
+                pool=args.attn_pool,
+                heads=1,
+                dropout=0.1,
+                emb_dropout=0.1,
+                heterogeneous_extra_prompt=args.heterogeneous_extra_prompt
+            )
         self.model = self.model.to(torch.device('cuda'))
 
         trainval_dataset = LearnwareDataset(args=args, stype='train', heterogeneous=args.heterogeneous)
@@ -139,7 +171,15 @@ class Trainer(object):
 
         prepare_handle = PrepareFunc(args)
         self.optimizer, self.lr_scheduler = prepare_handle.prepare_optimizer(self.model)
-        self.criterion = HierarchicalCE(args.num_learnware)
+        if args.use_hierarchy:
+            from learnware.loss import HierarchicalClusterLoss
+            self.criterion = HierarchicalClusterLoss(
+                args.num_learnware, self.model.cluster_tree,
+                alpha=args.hier_alpha, beta=args.hier_beta
+            )
+            self.criterion.set_model(self.model)
+        else:
+            self.criterion = HierarchicalCE(args.num_learnware)
         logging.info(f'Size: Train [{len(train_dataset)}], Val [{len(val_dataset)}], Test [{len(test_dataset)}]')
 
         self.best_state = {}

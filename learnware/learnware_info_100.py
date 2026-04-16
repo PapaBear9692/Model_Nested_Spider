@@ -100,8 +100,8 @@ BKB_100_SPECIFIC_RANK = [
     # === Twins (3) - from timm ===
     'twins_pcpvt_small', 'twins_pcpvt_base', 'twins_pcpvt_large',
 
-    # === TNT, PiT, CaiT (4) - from timm ===
-    'tnt_s_patch16_224', 'pit_b_224', 'pit_s_224', 'cait_s24_224',
+    # === TNT, PiT, CaiT (5) - from timm ===
+    'tnt_s_patch16_224', 'pit_b_224', 'pit_s_224', 'pit_xs_224', 'cait_s24_224',
 ]
 
 # Verify count
@@ -261,6 +261,7 @@ MODEL_100_2FEAT_DIM = {
     'tnt_s_patch16_224': 640,
     'pit_b_224': 768,
     'pit_s_224': 576,
+    'pit_xs_224': 384,
     'cait_s24_224': 768,
 }
 
@@ -350,6 +351,63 @@ def get_100_mode_config():
         'UNIFIED_FEAT_DIM': UNIFIED_FEAT_DIM_100,
     }
 
+
+# =============================================================================
+# CLUSTER TREE FOR 100 PTM HIERARCHICAL MODE
+# =============================================================================
+
+CLUSTER_TREE_100 = {
+    'cnn_classic': {
+        'resnet': ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'],
+        'densenet': ['densenet121', 'densenet161', 'densenet169', 'densenet201'],
+        'vgg': ['vgg11', 'vgg13', 'vgg16', 'vgg19',
+                'vgg11_bn', 'vgg13_bn', 'vgg16_bn', 'vgg19_bn'],
+        'classical': ['googlenet', 'inception_v3', 'alexnet'],
+    },
+    'cnn_modern': {
+        'efficientnet': ['efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2',
+                         'efficientnet_b3', 'efficientnet_b4', 'efficientnet_b5',
+                         'efficientnet_b6', 'efficientnet_b7'],
+        'efficientnetv2': ['efficientnetv2_s', 'efficientnetv2_m',
+                           'efficientnetv2_l', 'efficientnetv2_xl'],
+        'regnet_y': ['regnet_y_400mf', 'regnet_y_800mf', 'regnet_y_1_6gf',
+                      'regnet_y_3_2gf', 'regnet_y_8gf', 'regnet_y_16gf', 'regnet_y_32gf'],
+        'regnet_x': ['regnet_x_400mf', 'regnet_x_800mf', 'regnet_x_1_6gf',
+                      'regnet_x_3_2gf', 'regnet_x_8gf', 'regnet_x_16gf', 'regnet_x_32gf'],
+    },
+    'cnn_lightweight': {
+        'mobilenet': ['mobilenet_v2', 'mobilenet_v3_small', 'mobilenet_v3_large',
+                      'mnasnet0_5', 'mnasnet1_0'],
+        'shufflenet': ['shufflenet_v2_x0_5', 'shufflenet_v2_x1_0',
+                       'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0'],
+        'squeezenet': ['squeezenet1_0', 'squeezenet1_1'],
+    },
+    'transformer': {
+        'vit': ['vit_b_16', 'vit_b_32', 'vit_l_16', 'vit_l_32'],
+        'swin': ['swin_t', 'swin_s', 'swin_b', 'swin_v2_t'],
+        'deit': ['deit_tiny_patch16_224', 'deit_small_patch16_224',
+                 'deit_base_patch16_224', 'deit_base_patch16_384'],
+        'maxvit': ['maxvit_tiny_224', 'maxvit_small_224', 'maxvit_base_224'],
+        'mobilevit': ['mobilevit_s', 'mobilevit_xs', 'mobilevit_xxs'],
+        'coat': ['coat_lite_tiny', 'coat_lite_small', 'coat_lite_medium'],
+        'levit': ['levit_128s', 'levit_128', 'levit_192'],
+        'twins': ['twins_pcpvt_small', 'twins_pcpvt_base', 'twins_pcpvt_large'],
+        'pit_cait_tnt': ['tnt_s_patch16_224', 'pit_b_224', 'pit_s_224', 'pit_xs_224', 'cait_s24_224'],
+    },
+    'hybrid_specialized': {
+        'convnext': ['convnext_tiny', 'convnext_small', 'convnext_base', 'convnext_large'],
+        'convnextv2': ['convnextv2_atto', 'convnextv2_femto', 'convnextv2_nano', 'convnextv2_tiny'],
+        'hrnet': ['hrnet_w18_small', 'hrnet_w18', 'hrnet_w30'],
+    },
+}
+
+# Verify cluster tree matches 100 PTM list
+_all_clustered = []
+for _l1 in CLUSTER_TREE_100.values():
+    for _leaves in _l1.values():
+        _all_clustered.extend(_leaves)
+assert sorted(_all_clustered) == sorted(BKB_100_SPECIFIC_RANK), \
+    f"Cluster tree mismatch: tree has {sorted(_all_clustered)}, list has {sorted(BKB_100_SPECIFIC_RANK)}"
 
 # =============================================================================
 # CHECK PTM100 ENVIRONMENT VARIABLE

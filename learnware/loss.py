@@ -67,3 +67,39 @@ class ListMLE(nn.Module):
         observation_loss = torch.log(cumsums + eps) - preds_sorted_by_true_minus_max
         observation_loss[mask] = 0.0
         return torch.mean(torch.sum(observation_loss, dim=1))
+
+
+class HierarchicalClusterLoss(nn.Module):
+    """Drop-in replacement for HierarchicalCE with auxiliary cluster losses.
+
+    Same forward(logits, labels) signature.
+    Internally reads model._aux_L1 and model._aux_L2 for cluster navigation losses.
+    During eval (aux outputs are None), computes only the main HierarchicalCE loss.
+    """
+
+    def __init__(self, num_learnware, cluster_tree, alpha=0.3, beta=0.2):
+        super().__init__()
+        self.main_loss = HierarchicalCE(num_learnware)
+        self.cluster_tree = cluster_tree
+        self.alpha = alpha
+        self.beta = beta
+        self.model_ref = None
+
+    def set_model(self, model):
+        """Wire up model reference so loss can read _aux_L1, _aux_L2."""
+        self.model_ref = model
+
+    def forward(self, logits, labels):
+        # Main ranking loss — always computed
+        loss = self.main_loss(logits, labels)
+
+        # Auxiliary cluster losses — only when model stored aux outputs (training)
+        if (self.model_ref is not None
+                and hasattr(self.model_ref, 'cluster_layer')
+                and self.model_ref.cluster_layer._aux_L1 is not None):
+
+            l1_labels, l2_labels = self.cluster_tree.get_best_cluster_labels(labels)
+            loss = loss + self.alpha * F.cross_entropy(self.model_ref.cluster_layer._aux_L1, l1_labels)
+            loss = loss + self.beta * F.cross_entropy(self.model_ref.cluster_layer._aux_L2, l2_labels)
+
+        return loss

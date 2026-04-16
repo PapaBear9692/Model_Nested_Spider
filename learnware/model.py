@@ -157,3 +157,74 @@ class LearnwareCAHeterogeneous(nn.Module):
         outputs = torch.cat(outputs, dim=-1)
 
         return outputs
+
+
+class HierarchicalLearnwareCA(nn.Module):
+    """Drop-in replacement for LearnwareCAHeterogeneous with hierarchical clustering.
+
+    Same forward() signature. Same return shape [batch, num_learnware].
+    During training: scores all PTMs (no pruning), stores aux outputs for loss.
+    During eval: prunes using tree traversal, returns scores with -inf for pruned PTMs.
+    """
+
+    def __init__(self, *,
+                 num_learnware: int,
+                 dim: int,
+                 hdim: int,
+                 heads: int,
+                 uni_hete_proto_dim: tuple,
+                 data_sub_url: str,
+                 cluster_tree_config: dict,
+                 all_models: list,
+                 top_k_L1: int = 3,
+                 top_k_families: int = 2,
+                 pool: str = 'cls',
+                 dropout: float = 0.1,
+                 emb_dropout: float = 0.1,
+                 mode='concat-out-feature',
+                 heterogeneous_extra_prompt=False):
+
+        super().__init__()
+
+        # Base model — exact same construction as the original
+        self.base_model = LearnwareCAHeterogeneous(
+            num_learnware=num_learnware, dim=dim, hdim=hdim,
+            heads=heads, uni_hete_proto_dim=uni_hete_proto_dim,
+            data_sub_url=data_sub_url, pool=pool,
+            dropout=dropout, emb_dropout=emb_dropout,
+            heterogeneous_extra_prompt=heterogeneous_extra_prompt
+        )
+
+        # Cluster tree and layer
+        from .hierarchical_cluster import ClusterTree, HierarchicalClusterLayer
+        self.cluster_tree = ClusterTree(cluster_tree_config, all_models)
+        self.cluster_layer = HierarchicalClusterLayer(
+            cluster_tree=self.cluster_tree, dim=dim, heads=heads, dropout=dropout
+        )
+
+        self.top_k_L1 = top_k_L1
+        self.top_k_families = top_k_families
+
+    @property
+    def uni_linear(self):
+        return self.base_model.uni_linear
+
+    @property
+    def hete_linears(self):
+        return self.base_model.hete_linears
+
+    def forward(self, x_uni, x_hete, attn_mask, attn_mask_func=None, permute_indices=None):
+        """Same signature and return shape as LearnwareCAHeterogeneous.forward()."""
+        task_emb = x_uni.mean(dim=1, keepdim=True)  # [batch, 1, dim]
+
+        if self.training:
+            return self.cluster_layer.forward_training(
+                task_emb, self.base_model, x_uni, x_hete,
+                attn_mask, attn_mask_func
+            )
+        else:
+            return self.cluster_layer.forward_inference(
+                task_emb, self.base_model, x_uni, x_hete,
+                attn_mask, attn_mask_func,
+                self.top_k_L1, self.top_k_families
+            )
