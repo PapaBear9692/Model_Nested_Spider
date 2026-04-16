@@ -126,7 +126,7 @@ class LearnwareCAHeterogeneous(nn.Module):
 
         self.hete_extra_prompt = heterogeneous_extra_prompt
 
-    def forward(self, x_uni, x_hete, attn_mask, attn_mask_func=None, permute_indices=None):
+    def forward(self, x_uni, x_hete, attn_mask, attn_mask_func=None, permute_indices=None, candidate_indices=None):
         b = x_uni.shape[0]
 
         model_prompt = repeat(self.model_prompt, '1 c d -> b c d', b=b)
@@ -134,8 +134,11 @@ class LearnwareCAHeterogeneous(nn.Module):
         uni_prompt = repeat(self.uni_prompt, '1 c d -> b c d', b=b)
         hete_prompt = repeat(self.hete_prompt, '1 c d -> b c d', b=b)
 
+        # Which prompts to score: all (default) or only candidates (hierarchical inference)
+        prompt_range = candidate_indices if candidate_indices is not None else range(model_prompt.shape[1])
+
         outputs = []
-        for i_prompt in range(model_prompt.shape[1]):
+        for i_prompt in prompt_range:
             cur_prompt = model_prompt[:, i_prompt, :].unsqueeze(1)
             if self.hete_extra_prompt:
                 x_uni = x_uni + uni_prompt

@@ -12,8 +12,6 @@ import torch.nn.functional as F
 from torch import nn
 import numpy as np
 
-from einops import repeat
-
 
 # =============================================================================
 # Cluster Tree (static data structure, no learnable params)
@@ -63,6 +61,41 @@ class ClusterTree:
         self.num_l2 = len(self.level2_names)
         self.num_leaves = len(self.leaf_names)
 
+        # Precompute as tensors for faster inference
+        self._build_tensors()
+
+    def _build_tensors(self):
+        """Precompute index tensors for vectorized inference."""
+        # family_to_leaves as padded tensor: [num_l2, max_family_size]
+        max_family_size = max(len(v) for v in self.family_to_leaves.values())
+        family_leaves_padded = torch.full((self.num_l2, max_family_size), -1, dtype=torch.long)
+        family_leaves_mask = torch.zeros(self.num_l2, max_family_size, dtype=torch.bool)
+        for l2_idx, leaves in self.family_to_leaves.items():
+            family_leaves_padded[l2_idx, :len(leaves)] = torch.tensor(leaves)
+            family_leaves_mask[l2_idx, :len(leaves)] = True
+
+        # l1_to_families as padded tensor: [num_l1, max_families_per_l1]
+        max_families = max(len(v) for v in self.l1_to_families.values())
+        l1_families_padded = torch.full((self.num_l1, max_families), -1, dtype=torch.long)
+        l1_families_mask = torch.zeros(self.num_l1, max_families, dtype=torch.bool)
+        for l1_idx, families in self.l1_to_families.items():
+            l1_families_padded[l1_idx, :len(families)] = torch.tensor(families)
+            l1_families_mask[l1_idx, :len(families)] = True
+
+        # leaf_to_path as tensor: [num_leaves, 2] → (l1_idx, l2_idx)
+        leaf_path_tensor = torch.zeros(self.num_leaves, 2, dtype=torch.long)
+        for leaf_name, (l1_idx, l2_idx, _) in self.leaf_to_path.items():
+            global_idx = self.leaf_names.index(leaf_name)
+            leaf_path_tensor[global_idx] = torch.tensor([l1_idx, l2_idx])
+
+        self.register_buffer = False  # not an nn.Module, store plain
+        self._family_leaves_padded = family_leaves_padded
+        self._family_leaves_mask = family_leaves_mask
+        self._l1_families_padded = l1_families_padded
+        self._l1_families_mask = l1_families_mask
+        self._leaf_path_tensor = leaf_path_tensor
+        self._max_family_size = max_family_size
+
     def get_families(self, l1_idx):
         """Return L2 family indices for a given L1 cluster."""
         return self.l1_to_families[l1_idx]
@@ -82,14 +115,8 @@ class ClusterTree:
             l2_labels: [batch] — index of L2 family containing best PTM
         """
         best_ptm_idx = labels.argmax(dim=-1)
-        l1_labels = []
-        l2_labels = []
-        for b in range(labels.shape[0]):
-            ptm_name = self.leaf_names[best_ptm_idx[b].item()]
-            path = self.leaf_to_path[ptm_name]
-            l1_labels.append(path[0])
-            l2_labels.append(path[1])
-        return torch.tensor(l1_labels, device=labels.device), torch.tensor(l2_labels, device=labels.device)
+        paths = self._leaf_path_tensor.to(labels.device)[best_ptm_idx]  # [batch, 2]
+        return paths[:, 0], paths[:, 1]
 
 
 # =============================================================================
@@ -113,7 +140,7 @@ class HierarchicalClusterLayer(nn.Module):
         self.cluster_tokens_L1 = nn.Parameter(torch.randn(1, cluster_tree.num_l1, dim))
         self.cluster_tokens_L2 = nn.Parameter(torch.randn(1, cluster_tree.num_l2, dim))
 
-        # Task projection (projects task embedding to same dim as cluster tokens)
+        # Task projection (projects task embedding before cluster scoring)
         self.task_proj = nn.Linear(dim, dim)
 
         # Attention + scoring for L1
@@ -142,9 +169,9 @@ class HierarchicalClusterLayer(nn.Module):
         """
         b = task_emb.shape[0]
         tokens_expanded = tokens.expand(b, -1, -1)  # [batch, num_tokens, dim]
-        # concat each token with task embedding
-        # -> [batch, num_tokens, 2, dim] -> flatten to [batch*num_tokens, 2, dim]
-        combined = torch.stack([tokens_expanded, task_emb.expand(-1, tokens_expanded.shape[1], -1)], dim=2)
+        task_proj = self.task_proj(task_emb)  # [batch, 1, dim]
+        # concat each token with projected task embedding
+        combined = torch.stack([tokens_expanded, task_proj.expand(-1, tokens_expanded.shape[1], -1)], dim=2)
         batch_size, num_tokens = b, tokens_expanded.shape[1]
         combined = combined.view(batch_size * num_tokens, 2, self.dim)
 
@@ -160,6 +187,10 @@ class HierarchicalClusterLayer(nn.Module):
         Returns:
             final_scores: [batch, num_learnware] — same shape as base_model.forward()
         """
+        # Clear stale aux outputs
+        self._aux_L1 = None
+        self._aux_L2 = None
+
         # Score L1 clusters
         self._aux_L1 = self._score_level(self.cluster_tokens_L1, task_emb, self.attn_L1, self.score_L1)
 
@@ -172,7 +203,7 @@ class HierarchicalClusterLayer(nn.Module):
 
     def forward_inference(self, task_emb, base_model, x_uni, x_hete, attn_mask, attn_mask_func,
                           top_k_L1, top_k_families):
-        """Inference forward: prune at each level.
+        """Inference forward: prune at each level, only score candidate PTMs.
 
         Returns:
             final_scores: [batch, num_learnware] — real scores for selected PTMs, -inf for pruned
@@ -186,10 +217,11 @@ class HierarchicalClusterLayer(nn.Module):
         top_k_L1 = min(top_k_L1, self.tree.num_l1)
         top_l1_indices = torch.topk(l1_scores, top_k_L1, dim=-1).indices  # [batch, top_k_L1]
 
-        # Step 2: Score L2 families within selected L1 clusters and select top-K per cluster
+        # Step 2: Score L2 families and select top-K per selected L1
         l2_scores = self._score_level(self.cluster_tokens_L2, task_emb, self.attn_L2, self.score_L2)
 
-        candidate_leaves = [[] for _ in range(batch_size)]  # list of global leaf indices per batch element
+        # Build candidate leaf set per batch element
+        candidate_leaves = [[] for _ in range(batch_size)]
 
         for b in range(batch_size):
             selected_families = []
@@ -198,34 +230,40 @@ class HierarchicalClusterLayer(nn.Module):
                 family_indices = self.tree.get_families(l1_idx_val)
                 if len(family_indices) == 0:
                     continue
-
-                # Score families within this L1 cluster
                 family_scores = l2_scores[b, family_indices]
                 top_k = min(top_k_families, len(family_indices))
                 top_family_local = torch.topk(family_scores, top_k).indices
                 for fl in top_family_local:
                     selected_families.append(family_indices[fl.item()])
 
-            # Collect leaf PTMs from selected families
             for l2_idx in selected_families:
                 candidate_leaves[b].extend(self.tree.get_leaves(l2_idx))
 
-        # Step 3: Score only candidate PTMs
+        # Step 3: Find the union of candidates across the batch (for the shared base model loop)
+        all_candidates = set()
+        for leaves in candidate_leaves:
+            all_candidates.update(leaves)
+        sorted_candidates = sorted(all_candidates)
+
+        if len(sorted_candidates) == 0:
+            return torch.full((batch_size, num_learnware), float('-inf'), device=device)
+
+        # Score ONLY the candidate PTMs (skip the rest — this is the speedup)
+        candidate_scores = base_model.forward(
+            x_uni, x_hete, attn_mask, attn_mask_func,
+            candidate_indices=sorted_candidates
+        )  # [batch, len(sorted_candidates)]
+
+        # Map candidate scores back to full [batch, num_learnware] tensor
         final_scores = torch.full((batch_size, num_learnware), float('-inf'), device=device)
-
-        # Use base model to score all PTMs, then mask non-candidates
-        all_scores = base_model.forward(x_uni, x_hete, attn_mask, attn_mask_func)  # [batch, num_learnware]
-
-        for b in range(batch_size):
-            if len(candidate_leaves[b]) > 0:
-                candidate_idx = torch.tensor(candidate_leaves[b], device=device)
-                final_scores[b, candidate_idx] = all_scores[b, candidate_idx]
+        candidate_tensor = torch.tensor(sorted_candidates, device=device)
+        final_scores[:, candidate_tensor] = candidate_scores
 
         return final_scores
 
 
 class _ClusterAttention(nn.Module):
-    """Simple self-attention for cluster scoring (reuses MultiHeadAttention pattern)."""
+    """Simple self-attention for cluster scoring."""
 
     def __init__(self, dim, heads=1, dropout=0.1):
         super().__init__()
